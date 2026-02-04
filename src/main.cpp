@@ -18,7 +18,7 @@ static void usage(const char* argv0) {
   std::cerr
     << "Usage: " << argv0 << " [--dev /dev/i2c-X] [--addr 0x20] [--poll-ms 5]\n"
     << "\nDefaults:\n"
-    << "  --dev     /dev/i2c-1\n"
+    << "  --dev     /dev/i2c-13n"
     << "  --addr    0x20\n"
     << "  --poll-ms 5\n";
 }
@@ -36,7 +36,7 @@ static uint8_t parse_u8(const std::string& s) {
 int main(int argc, char** argv) {
   std::signal(SIGINT, on_sigint);
 
-  std::string dev = "/dev/i2c-1";
+  std::string dev = "/dev/i2c-3";
   uint8_t addr = 0x20;
   int poll_ms = 5;
 
