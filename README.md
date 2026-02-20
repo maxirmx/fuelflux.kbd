@@ -63,12 +63,12 @@ cmake --build build -j
 Default is `/dev/i2c-1` and address `0x20`:
 
 ```bash
-sudo ./build/mcp23017_keypad_demo
+sudo ./build/kbd
 ```
 
 Options:
 ```bash
-sudo ./build/mcp23017_keypad_demo --dev /dev/i2c-1 --addr 0x20 --poll-ms 5
+sudo ./build/kbd --dev /dev/i2c-1 --addr 0x20 --poll-ms 5
 ```
 
 It prints key presses like:
