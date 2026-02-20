@@ -46,7 +46,7 @@ Enable I2C in Armbian (one of):
 
 Verify the device is visible:
 ```bash
-sudo i2cdetect -y 1
+sudo i2cdetect -y 3
 ```
 You should see `20` at the expected address.
 
@@ -60,7 +60,7 @@ cmake --build build -j
 
 ## Run
 
-Default is `/dev/i2c-1` and address `0x20`:
+Default is `/dev/i2c-3` and address `0x20`:
 
 ```bash
 sudo ./build/kbd
@@ -68,7 +68,7 @@ sudo ./build/kbd
 
 Options:
 ```bash
-sudo ./build/kbd --dev /dev/i2c-1 --addr 0x20 --poll-ms 5
+sudo ./build/kbd --dev /dev/i2c-3 --addr 0x20 --poll-ms 5
 ```
 
 It prints key presses like:
