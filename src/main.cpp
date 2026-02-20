@@ -18,7 +18,7 @@ static void usage(const char* argv0) {
   std::cerr
     << "Usage: " << argv0 << " [--dev /dev/i2c-X] [--addr 0x20] [--poll-ms 5]\n"
     << "\nDefaults:\n"
-    << "  --dev     /dev/i2c-13n"
+    << "  --dev     /dev/i2c-3n"
     << "  --addr    0x20\n"
     << "  --poll-ms 5\n";
 }
