@@ -18,6 +18,7 @@ endif()
 
 add_executable(kbd
   src/main.cpp
+  src/key_press_tracker.cpp
   src/mcp23017.cpp
 )
 
@@ -37,6 +38,35 @@ target_compile_definitions(kbd PRIVATE
 message(STATUS "Long press threshold: ${KEYPAD_LONG_PRESS_MS} ms")
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  target_compile_options(kbd
- PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(kbd PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+  )
+endif()
+
+include(CTest)
+
+if (BUILD_TESTING)
+  add_executable(key_press_tracker_test
+    tests/key_press_tracker_test.cpp
+    src/key_press_tracker.cpp
+  )
+  target_include_directories(key_press_tracker_test PRIVATE include)
+
+  if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(key_press_tracker_test
+      PRIVATE -Wall -Wextra -Wpedantic
+    )
+  endif()
+
+  add_test(NAME key_press_tracker COMMAND key_press_tracker_test)
+
+  add_test(NAME kbd_help_default_port COMMAND kbd --help)
+  set_tests_properties(kbd_help_default_port PROPERTIES
+    PASS_REGULAR_EXPRESSION "--port    B"
+  )
+
+  add_test(NAME kbd_port_a_option COMMAND kbd --port A --help)
+  add_test(NAME kbd_port_b_option COMMAND kbd --port B --help)
 endif()
