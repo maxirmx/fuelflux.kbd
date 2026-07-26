@@ -95,9 +95,18 @@ cmake -S . -B build-legacy -DKEYPAD_LAYOUT_VID=OFF
 cmake --build build-legacy -j
 ```
 
+The long-press threshold defaults to 1000 ms. Set
+`KEYPAD_LONG_PRESS_MS` while configuring to choose another positive
+millisecond value:
+
+```bash
+cmake -S . -B build -DKEYPAD_LONG_PRESS_MS=1500
+cmake --build build -j
+```
+
 Use separate build directories for the two variants so it is always clear
 which keyboard layout an executable contains. CMake also prints the selected
-layout while configuring.
+layout and long-press threshold while configuring.
 
 ## Run
 
@@ -112,15 +121,19 @@ Options:
 sudo ./build/kbd --dev /dev/i2c-3 --addr 0x20 --poll-ms 5
 ```
 
-It prints key presses like:
+Short presses are reported after the key is released. A long press is reported
+once as soon as the key has remained down for at least the configured
+threshold; releasing it does not produce an additional short-press event.
+
+Example output:
 
 ```
-Pressed: 5
-Pressed: START/ENTER
+Pressed: 5 (short)
+Pressed: START/ENTER (long)
 ```
 
 The startup banner includes the selected layout name: `VID 14-key` or
-`legacy 4x4`.
+`legacy 4x4`, and the compiled long-press threshold.
 
 ## Notes / troubleshooting
 

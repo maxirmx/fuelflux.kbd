@@ -16,9 +16,19 @@
 #define KEYPAD_LAYOUT_VID 1
 #endif
 
+#ifndef KEYPAD_LONG_PRESS_MS
+#define KEYPAD_LONG_PRESS_MS 1000
+#endif
+
 namespace {
 
 constexpr int MATRIX_SIZE = 4;
+constexpr std::chrono::milliseconds LONG_PRESS_THRESHOLD{
+  KEYPAD_LONG_PRESS_MS
+};
+
+static_assert(KEYPAD_LONG_PRESS_MS > 0,
+              "long press threshold must be positive");
 
 struct KeypadLayout {
   const char* name;
@@ -123,6 +133,10 @@ static std::string_view scan_keypad(MCP23017& mcp) {
   return {};
 }
 
+static void report_press(std::string_view key, std::string_view duration) {
+  std::cout << "Pressed: " << key << " (" << duration << ")\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -169,35 +183,66 @@ int main(int argc, char** argv) {
 
     std::cout << "MCP23017 keypad demo started\n"
               << "  Layout  : " << KEYPAD_LAYOUT.name << "\n"
+              << "  Long key: " << LONG_PRESS_THRESHOLD.count() << " ms\n"
               << "  I2C dev : " << dev << "\n"
               << "  Address : 0x" << std::hex << int(addr) << std::dec << "\n"
               << "Press Ctrl+C to stop.\n";
 
     bool waiting_release = false;
+    bool long_reported = false;
+    std::string_view active_key;
+    std::chrono::steady_clock::time_point pressed_at;
 
     while (!g_stop) {
       const std::string_view found = scan_keypad(mcp);
 
       if (!waiting_release) {
         if (!found.empty()) {
+          const auto detected_at = std::chrono::steady_clock::now();
+
           // Debounce: confirm after a short delay
           std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
           const std::string_view confirm = scan_keypad(mcp);
 
           if (confirm == found) {
-            std::cout << "Pressed: " << found << "\n";
+            active_key = found;
+            pressed_at = detected_at;
+            long_reported = false;
             waiting_release = true;
+
+            if (std::chrono::steady_clock::now() - pressed_at >=
+                LONG_PRESS_THRESHOLD) {
+              report_press(active_key, "long");
+              long_reported = true;
+            }
           }
         }
       } else {
-        // Wait for release: no key must be detected for some time
-        if (found.empty()) {
+        if (!found.empty()) {
+          if (!long_reported && found == active_key &&
+              std::chrono::steady_clock::now() - pressed_at >=
+                LONG_PRESS_THRESHOLD) {
+            report_press(active_key, "long");
+            long_reported = true;
+          }
+        } else {
+          // Confirm release before classifying a press shorter than the
+          // long-press threshold.
+          const auto release_detected_at = std::chrono::steady_clock::now();
           std::this_thread::sleep_for(std::chrono::milliseconds(30));
           const std::string_view again = scan_keypad(mcp);
 
           if (again.empty()) {
+            if (!long_reported) {
+              const bool is_long =
+                release_detected_at - pressed_at >= LONG_PRESS_THRESHOLD;
+              report_press(active_key, is_long ? "long" : "short");
+            }
+
             waiting_release = false;
+            long_reported = false;
+            active_key = {};
           }
         }
       }
