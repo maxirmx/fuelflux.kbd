@@ -8,7 +8,60 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
+
+#ifndef KEYPAD_LAYOUT_VID
+#define KEYPAD_LAYOUT_VID 1
+#endif
+
+namespace {
+
+constexpr int MATRIX_SIZE = 4;
+
+struct KeypadLayout {
+  const char* name;
+  uint8_t row_mask;
+  uint8_t col_mask;
+  uint8_t row_bits[MATRIX_SIZE];
+  uint8_t col_bits[MATRIX_SIZE];
+  std::string_view keymap[MATRIX_SIZE][MATRIX_SIZE];
+};
+
+#if KEYPAD_LAYOUT_VID
+constexpr KeypadLayout KEYPAD_LAYOUT = {
+  "VID 14-key",
+  0b1010'1010,  // PA1, PA3, PA5, PA7 are row outputs
+  0b0101'0101,  // PA0, PA2, PA4, PA6 are column inputs
+  {7, 5, 3, 1},
+  {0, 2, 4, 6},
+  {
+    {"1",       "2", "3",         "START/ENTER"},
+    {"4",       "5", "6",         "STOP/CANCEL"},
+    {"7",       "8", "9",         ""},
+    {"RUS/ENG", "0", "BACKSPACE", ""}
+  }
+};
+#else
+constexpr KeypadLayout KEYPAD_LAYOUT = {
+  "legacy 4x4",
+  0b0000'1111,  // PA0..PA3 are row outputs
+  0b1111'0000,  // PA4..PA7 are column inputs
+  {0, 1, 2, 3},
+  {4, 5, 6, 7},
+  {
+    {"1", "2", "3", "A"},
+    {"4", "5", "6", "B"},
+    {"7", "8", "9", "C"},
+    {"*", "0", "#", "D"}
+  }
+};
+#endif
+
+static_assert((KEYPAD_LAYOUT.row_mask & KEYPAD_LAYOUT.col_mask) == 0,
+              "row and column GPIO masks must not overlap");
+static_assert((KEYPAD_LAYOUT.row_mask | KEYPAD_LAYOUT.col_mask) == 0xFF,
+              "keypad layout must use all MCP23017 port A pins");
 
 static volatile std::sig_atomic_t g_stop = 0;
 
@@ -18,7 +71,7 @@ static void usage(const char* argv0) {
   std::cerr
     << "Usage: " << argv0 << " [--dev /dev/i2c-X] [--addr 0x20] [--poll-ms 5]\n"
     << "\nDefaults:\n"
-    << "  --dev     /dev/i2c-3n"
+    << "  --dev     /dev/i2c-3\n"
     << "  --addr    0x20\n"
     << "  --poll-ms 5\n";
 }
@@ -32,6 +85,44 @@ static uint8_t parse_u8(const std::string& s) {
   }
   return static_cast<uint8_t>(v);
 }
+
+static std::string_view scan_keypad(MCP23017& mcp) {
+  for (int row = 0; row < MATRIX_SIZE; row++) {
+    uint8_t output = KEYPAD_LAYOUT.row_mask;
+    output &= static_cast<uint8_t>(
+      ~(1u << KEYPAD_LAYOUT.row_bits[row])
+    );
+    mcp.write_olata(output);
+
+    // Allow the GPIO expander and membrane contacts to settle.
+    std::this_thread::sleep_for(std::chrono::microseconds(300));
+
+    const uint8_t columns = static_cast<uint8_t>(
+      mcp.read_gpioA() & KEYPAD_LAYOUT.col_mask
+    );
+    if (columns == KEYPAD_LAYOUT.col_mask) {
+      continue;
+    }
+
+    for (int column = 0; column < MATRIX_SIZE; column++) {
+      const uint8_t bit = static_cast<uint8_t>(
+        1u << KEYPAD_LAYOUT.col_bits[column]
+      );
+      if ((columns & bit) == 0) {
+        const std::string_view key = KEYPAD_LAYOUT.keymap[row][column];
+        if (!key.empty()) {
+          mcp.write_olata(KEYPAD_LAYOUT.row_mask);
+          return key;
+        }
+      }
+    }
+  }
+
+  mcp.write_olata(KEYPAD_LAYOUT.row_mask);
+  return {};
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   std::signal(SIGINT, on_sigint);
@@ -59,136 +150,53 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Key layout:
-  // R1: 1 2 3 A
-  // R2: 4 5 6 B
-  // R3: 7 8 9 C
-  // R4: * 0 # D
-  static const char keymap[4][4] = {
-    {'1','2','3','A'},
-    {'4','5','6','B'},
-    {'7','8','9','C'},
-    {'*','0','#','D'}
-  };
-
-  // Port A mapping (your requirement):
-  // PA0..PA3 rows (outputs)
-  // PA4..PA7 cols (inputs with pull-ups)
-  constexpr uint8_t ROW_MASK = 0b0000'1111;  // PA0..PA3
-  constexpr uint8_t COL_MASK = 0b1111'0000;  // PA4..PA7
-
   try {
     MCP23017 mcp(dev, addr);
     mcp.open_bus();
 
     // Rows = outputs (0), Cols = inputs (1)
     // IODIR bit: 1=input, 0=output
-    uint8_t iodirA = (COL_MASK) | 0x00;              // PA4..PA7 inputs, PA0..PA3 outputs
-    uint8_t gppuA  = (COL_MASK);                     // pull-ups on PA4..PA7
-    mcp.configure_portA(iodirA, gppuA);
+    mcp.configure_portA(
+      KEYPAD_LAYOUT.col_mask,
+      KEYPAD_LAYOUT.col_mask
+    );
 
     // Set all rows HIGH initially (inactive)
     // For outputs, OLATA bit=1 -> drive high.
-    // Keep upper bits don't-care for inputs.
-    uint8_t rows_idle = ROW_MASK; // PA0..PA3 high
-    mcp.write_olata(rows_idle);
+    // Column latch bits are don't-care because those pins are inputs.
+    mcp.write_olata(KEYPAD_LAYOUT.row_mask);
 
     std::cout << "MCP23017 keypad demo started\n"
+              << "  Layout  : " << KEYPAD_LAYOUT.name << "\n"
               << "  I2C dev : " << dev << "\n"
               << "  Address : 0x" << std::hex << int(addr) << std::dec << "\n"
               << "Press Ctrl+C to stop.\n";
 
-    char last_key = '\0';
     bool waiting_release = false;
 
     while (!g_stop) {
-      char found = '\0';
-
-      // Scan each row: drive one row LOW, other rows HIGH, read columns.
-      for (int r = 0; r < 4 && !found; r++) {
-        uint8_t out = rows_idle;
-
-        // Drive current row LOW => clear that bit
-        out &= static_cast<uint8_t>(~(1u << r));
-        mcp.write_olata(out);
-
-        // Small settle time (MCP is fast, but keypad + wiring benefits)
-        std::this_thread::sleep_for(std::chrono::microseconds(300));
-
-        uint8_t gpioA = mcp.read_gpioA();
-        uint8_t cols = static_cast<uint8_t>(gpioA & COL_MASK);
-
-        // With pull-ups, idle cols are HIGH (1). Press makes LOW (0) on the active row.
-        if (cols != COL_MASK) {
-          for (int c = 0; c < 4; c++) {
-            uint8_t bit = static_cast<uint8_t>(1u << (4 + c));
-            if ((cols & bit) == 0) {
-              found = keymap[r][c];
-              break;
-            }
-          }
-        }
-      }
-
-      // Restore idle state each scan loop
-      mcp.write_olata(rows_idle);
+      const std::string_view found = scan_keypad(mcp);
 
       if (!waiting_release) {
-        if (found) {
+        if (!found.empty()) {
           // Debounce: confirm after a short delay
           std::this_thread::sleep_for(std::chrono::milliseconds(20));
 
-          // Re-check quickly (one more scan)
-          char confirm = '\0';
-          for (int r = 0; r < 4 && !confirm; r++) {
-            uint8_t out = rows_idle & static_cast<uint8_t>(~(1u << r));
-            mcp.write_olata(out);
-            std::this_thread::sleep_for(std::chrono::microseconds(300));
-            uint8_t cols = static_cast<uint8_t>(mcp.read_gpioA() & COL_MASK);
-            if (cols != COL_MASK) {
-              for (int c = 0; c < 4; c++) {
-                uint8_t bit = static_cast<uint8_t>(1u << (4 + c));
-                if ((cols & bit) == 0) {
-                  confirm = keymap[r][c];
-                  break;
-                }
-              }
-            }
-          }
-          mcp.write_olata(rows_idle);
+          const std::string_view confirm = scan_keypad(mcp);
 
           if (confirm == found) {
             std::cout << "Pressed: " << found << "\n";
-            last_key = found;
             waiting_release = true;
           }
         }
       } else {
         // Wait for release: no key must be detected for some time
-        if (!found) {
+        if (found.empty()) {
           std::this_thread::sleep_for(std::chrono::milliseconds(30));
-          // Still no key?
-          char again = '\0';
-          for (int r = 0; r < 4 && !again; r++) {
-            uint8_t out = rows_idle & static_cast<uint8_t>(~(1u << r));
-            mcp.write_olata(out);
-            std::this_thread::sleep_for(std::chrono::microseconds(300));
-            uint8_t cols = static_cast<uint8_t>(mcp.read_gpioA() & COL_MASK);
-            if (cols != COL_MASK) {
-              for (int c = 0; c < 4; c++) {
-                uint8_t bit = static_cast<uint8_t>(1u << (4 + c));
-                if ((cols & bit) == 0) {
-                  again = keymap[r][c];
-                  break;
-                }
-              }
-            }
-          }
-          mcp.write_olata(rows_idle);
+          const std::string_view again = scan_keypad(mcp);
 
-          if (!again) {
+          if (again.empty()) {
             waiting_release = false;
-            last_key = '\0';
           }
         }
       }
