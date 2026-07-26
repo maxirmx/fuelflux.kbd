@@ -1,4 +1,4 @@
-\
+#include "key_press_tracker.hpp"
 #include "mcp23017.hpp"
 
 #include <chrono>
@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -16,9 +17,21 @@
 #define KEYPAD_LAYOUT_VID 1
 #endif
 
+#ifndef KEYPAD_LONG_PRESS_MS
+#define KEYPAD_LONG_PRESS_MS 1000
+#endif
+
 namespace {
 
 constexpr int MATRIX_SIZE = 4;
+constexpr std::chrono::milliseconds LONG_PRESS_THRESHOLD{
+  KEYPAD_LONG_PRESS_MS
+};
+constexpr std::chrono::milliseconds PRESS_DEBOUNCE{20};
+constexpr std::chrono::milliseconds RELEASE_DEBOUNCE{30};
+
+static_assert(KEYPAD_LONG_PRESS_MS > 0,
+              "long press threshold must be positive");
 
 struct KeypadLayout {
   const char* name;
@@ -32,8 +45,8 @@ struct KeypadLayout {
 #if KEYPAD_LAYOUT_VID
 constexpr KeypadLayout KEYPAD_LAYOUT = {
   "VID 14-key",
-  0b1010'1010,  // PA1, PA3, PA5, PA7 are row outputs
-  0b0101'0101,  // PA0, PA2, PA4, PA6 are column inputs
+  0b1010'1010,  // P1, P3, P5, P7 are row outputs
+  0b0101'0101,  // P0, P2, P4, P6 are column inputs
   {7, 5, 3, 1},
   {0, 2, 4, 6},
   {
@@ -46,8 +59,8 @@ constexpr KeypadLayout KEYPAD_LAYOUT = {
 #else
 constexpr KeypadLayout KEYPAD_LAYOUT = {
   "legacy 4x4",
-  0b0000'1111,  // PA0..PA3 are row outputs
-  0b1111'0000,  // PA4..PA7 are column inputs
+  0b0000'1111,  // P0..P3 are row outputs
+  0b1111'0000,  // P4..P7 are column inputs
   {0, 1, 2, 3},
   {4, 5, 6, 7},
   {
@@ -62,7 +75,7 @@ constexpr KeypadLayout KEYPAD_LAYOUT = {
 static_assert((KEYPAD_LAYOUT.row_mask & KEYPAD_LAYOUT.col_mask) == 0,
               "row and column GPIO masks must not overlap");
 static_assert((KEYPAD_LAYOUT.row_mask | KEYPAD_LAYOUT.col_mask) == 0xFF,
-              "keypad layout must use all MCP23017 port A pins");
+              "keypad layout must use all selected MCP23017 port pins");
 
 static volatile std::sig_atomic_t g_stop = 0;
 
@@ -70,10 +83,12 @@ static void on_sigint(int) { g_stop = 1; }
 
 static void usage(const char* argv0) {
   std::cerr
-    << "Usage: " << argv0 << " [--dev /dev/i2c-X] [--addr 0x20] [--poll-ms 5]\n"
+    << "Usage: " << argv0
+    << " [--dev /dev/i2c-X] [--addr 0x20] [--port A|B] [--poll-ms 5]\n"
     << "\nDefaults:\n"
     << "  --dev     /dev/i2c-3\n"
     << "  --addr    0x20\n"
+    << "  --port    B\n"
     << "  --poll-ms 5\n";
 }
 
@@ -87,19 +102,36 @@ static uint8_t parse_u8(const std::string& s) {
   return static_cast<uint8_t>(v);
 }
 
-static std::string_view scan_keypad(MCP23017& mcp) {
+static const char* port_name(MCP23017::Port port) {
+  return port == MCP23017::Port::A ? "A" : "B";
+}
+
+static std::optional<MCP23017::Port> parse_port(std::string_view value) {
+  if (value == "A" || value == "a") {
+    return MCP23017::Port::A;
+  }
+  if (value == "B" || value == "b") {
+    return MCP23017::Port::B;
+  }
+  return std::nullopt;
+}
+
+static std::string_view scan_keypad(
+  MCP23017& mcp,
+  MCP23017::Port port
+) {
   for (int row = 0; row < MATRIX_SIZE; row++) {
     uint8_t output = KEYPAD_LAYOUT.row_mask;
     output &= static_cast<uint8_t>(
       ~(1u << KEYPAD_LAYOUT.row_bits[row])
     );
-    mcp.write_olata(output);
+    mcp.write_olat(port, output);
 
     // Allow the GPIO expander and membrane contacts to settle.
     std::this_thread::sleep_for(std::chrono::microseconds(300));
 
     const uint8_t columns = static_cast<uint8_t>(
-      mcp.read_gpioA() & KEYPAD_LAYOUT.col_mask
+      mcp.read_gpio(port) & KEYPAD_LAYOUT.col_mask
     );
     if (columns == KEYPAD_LAYOUT.col_mask) {
       continue;
@@ -112,15 +144,21 @@ static std::string_view scan_keypad(MCP23017& mcp) {
       if ((columns & bit) == 0) {
         const std::string_view key = KEYPAD_LAYOUT.keymap[row][column];
         if (!key.empty()) {
-          mcp.write_olata(KEYPAD_LAYOUT.row_mask);
+          mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
           return key;
         }
       }
     }
   }
 
-  mcp.write_olata(KEYPAD_LAYOUT.row_mask);
+  mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
   return {};
+}
+
+static void report_press(const KeyPressEvent& event) {
+  const char* kind =
+    event.kind == KeyPressKind::Long ? "long" : "short";
+  std::cout << "Pressed: " << event.key << " (" << kind << ")\n";
 }
 
 }  // namespace
@@ -130,6 +168,7 @@ int main(int argc, char** argv) {
 
   std::string dev = "/dev/i2c-3";
   uint8_t addr = 0x20;
+  MCP23017::Port port = MCP23017::Port::B;
   int poll_ms = 5;
 
   for (int i = 1; i < argc; i++) {
@@ -141,6 +180,15 @@ int main(int argc, char** argv) {
       dev = argv[++i];
     } else if (a == "--addr" && i + 1 < argc) {
       addr = parse_u8(argv[++i]);
+    } else if (a == "--port" && i + 1 < argc) {
+      const std::string value = argv[++i];
+      const auto parsed_port = parse_port(value);
+      if (!parsed_port) {
+        std::cerr << "Invalid port: " << value << " (expected A or B)\n";
+        usage(argv[0]);
+        return 2;
+      }
+      port = *parsed_port;
     } else if (a == "--poll-ms" && i + 1 < argc) {
       poll_ms = std::stoi(argv[++i]);
       if (poll_ms < 1) poll_ms = 1;
@@ -157,7 +205,8 @@ int main(int argc, char** argv) {
 
     // Rows = outputs (0), Cols = inputs (1)
     // IODIR bit: 1=input, 0=output
-    mcp.configure_portA(
+    mcp.configure_port(
+      port,
       KEYPAD_LAYOUT.col_mask,
       KEYPAD_LAYOUT.col_mask
     );
@@ -165,41 +214,30 @@ int main(int argc, char** argv) {
     // Set all rows HIGH initially (inactive)
     // For outputs, OLATA bit=1 -> drive high.
     // Column latch bits are don't-care because those pins are inputs.
-    mcp.write_olata(KEYPAD_LAYOUT.row_mask);
+    mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
 
     std::cout << "MCP23017 keypad demo started\n"
               << "  Layout  : " << KEYPAD_LAYOUT.name << "\n"
+              << "  Port    : " << port_name(port) << "\n"
+              << "  Long key: " << LONG_PRESS_THRESHOLD.count() << " ms\n"
               << "  I2C dev : " << dev << "\n"
               << "  Address : 0x" << std::hex << int(addr) << std::dec << "\n"
               << "Press Ctrl+C to stop.\n";
 
-    bool waiting_release = false;
+    KeyPressTracker press_tracker(
+      LONG_PRESS_THRESHOLD,
+      PRESS_DEBOUNCE,
+      RELEASE_DEBOUNCE
+    );
 
     while (!g_stop) {
-      const std::string_view found = scan_keypad(mcp);
-
-      if (!waiting_release) {
-        if (!found.empty()) {
-          // Debounce: confirm after a short delay
-          std::this_thread::sleep_for(std::chrono::milliseconds(20));
-
-          const std::string_view confirm = scan_keypad(mcp);
-
-          if (confirm == found) {
-            std::cout << "Pressed: " << found << "\n";
-            waiting_release = true;
-          }
-        }
-      } else {
-        // Wait for release: no key must be detected for some time
-        if (found.empty()) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(30));
-          const std::string_view again = scan_keypad(mcp);
-
-          if (again.empty()) {
-            waiting_release = false;
-          }
-        }
+      const std::string_view found = scan_keypad(mcp, port);
+      const auto event = press_tracker.update(
+        found,
+        std::chrono::steady_clock::now()
+      );
+      if (event) {
+        report_press(*event);
       }
 
       std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));

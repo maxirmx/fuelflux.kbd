@@ -1,4 +1,3 @@
-\
 #include "mcp23017.hpp"
 
 #include <cerrno>
@@ -19,6 +18,10 @@ static constexpr uint8_t REG_IPOLA  = 0x02;
 static constexpr uint8_t REG_GPPUA  = 0x0C;
 static constexpr uint8_t REG_GPIOA  = 0x12;
 static constexpr uint8_t REG_OLATA  = 0x14;
+
+static constexpr uint8_t port_offset(MCP23017::Port port) {
+  return port == MCP23017::Port::B ? 1u : 0u;
+}
 
 static std::runtime_error sys_err(const char* what) {
   return std::runtime_error(std::string(what) + ": " + std::strerror(errno));
@@ -73,12 +76,25 @@ void MCP23017::write_reg(uint8_t reg, uint8_t value) {
   if (::write(fd_, buf, 2) != 2) throw sys_err("i2c write(reg,value)");
 }
 
-void MCP23017::configure_portA(uint8_t iodir, uint8_t gppu, uint8_t ipol) {
-  write_reg(REG_IODIRA, iodir);
-  write_reg(REG_GPPUA,  gppu);
-  write_reg(REG_IPOLA,  ipol);
+void MCP23017::configure_port(
+  Port port,
+  uint8_t iodir,
+  uint8_t gppu,
+  uint8_t ipol
+) {
+  const uint8_t offset = port_offset(port);
+  write_reg(static_cast<uint8_t>(REG_IODIRA + offset), iodir);
+  write_reg(static_cast<uint8_t>(REG_GPPUA + offset), gppu);
+  write_reg(static_cast<uint8_t>(REG_IPOLA + offset), ipol);
 }
 
-uint8_t MCP23017::read_gpioA() { return read_reg(REG_GPIOA); }
+uint8_t MCP23017::read_gpio(Port port) {
+  return read_reg(static_cast<uint8_t>(REG_GPIOA + port_offset(port)));
+}
 
-void MCP23017::write_olata(uint8_t value) { write_reg(REG_OLATA, value); }
+void MCP23017::write_olat(Port port, uint8_t value) {
+  write_reg(
+    static_cast<uint8_t>(REG_OLATA + port_offset(port)),
+    value
+  );
+}

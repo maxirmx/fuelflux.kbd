@@ -1,7 +1,8 @@
 # MCP23017 Keypad demo (Orange Pi Zero 2W)
 
-This C++ demo scans a membrane matrix keypad connected to MCP23017 port A.
-The keyboard layout and wiring are selected at build time:
+This C++ demo scans a membrane matrix keypad connected to either MCP23017 GPIO
+port. Port B is selected by default; use `--port A` to select port A at
+runtime. The keyboard layout and wiring are selected at build time:
 
 - **VID 14-key keyboard** (default)
 - **Legacy 4x4 keypad**
@@ -11,18 +12,20 @@ Only one layout is included in each executable.
 ## VID 14-key keyboard
 
 The eight Crimpflex contacts are numbered left-to-right when the keyboard is
-viewed from the front, as in the manufacturer's drawing.
+viewed from the front, as in the manufacturer's drawing. In the table, `P0`
+through `P7` refer to the same-numbered pin on the selected port (`PA0` through
+`PA7` or `PB0` through `PB7`).
 
-| Contact | Matrix net | MCP23017 | Direction |
+| Contact | Matrix net | Selected port | Direction |
 |---:|---|---|---|
-| 1 | C1 | PA0 | Input with pull-up |
-| 2 | R4 | PA1 | Output |
-| 3 | C2 | PA2 | Input with pull-up |
-| 4 | R3 | PA3 | Output |
-| 5 | C3 | PA4 | Input with pull-up |
-| 6 | R2 | PA5 | Output |
-| 7 | C4 | PA6 | Input with pull-up |
-| 8 | R1 | PA7 | Output |
+| 1 | C1 | P0 | Input with pull-up |
+| 2 | R4 | P1 | Output |
+| 3 | C2 | P2 | Input with pull-up |
+| 4 | R3 | P3 | Output |
+| 5 | C3 | P4 | Input with pull-up |
+| 6 | R2 | P5 | Output |
+| 7 | C4 | P6 | Input with pull-up |
+| 8 | R1 | P7 | Output |
 
 The VID matrix is:
 
@@ -37,17 +40,17 @@ The VID matrix is:
 
 The legacy wiring remains unchanged:
 
-- PA0..PA3: row outputs R1..R4
-- PA4..PA7: column inputs C1..C4 with internal pull-ups
+- P0..P3: row outputs R1..R4 on the selected port
+- P4..P7: column inputs C1..C4 with internal pull-ups
 - Ribbon pins 1..4: R1..R4
 - Ribbon pins 5..8: C1..C4
 
-| | C1/PA4 | C2/PA5 | C3/PA6 | C4/PA7 |
+| | C1/P4 | C2/P5 | C3/P6 | C4/P7 |
 |---|---|---|---|---|
-| R1/PA0 | `1` | `2` | `3` | `A` |
-| R2/PA1 | `4` | `5` | `6` | `B` |
-| R3/PA2 | `7` | `8` | `9` | `C` |
-| R4/PA3 | `*` | `0` | `#` | `D` |
+| R1/P0 | `1` | `2` | `3` | `A` |
+| R2/P1 | `4` | `5` | `6` | `B` |
+| R3/P2 | `7` | `8` | `9` | `C` |
+| R4/P3 | `*` | `0` | `#` | `D` |
 
 ### I²C
 
@@ -95,13 +98,23 @@ cmake -S . -B build-legacy -DKEYPAD_LAYOUT_VID=OFF
 cmake --build build-legacy -j
 ```
 
+The long-press threshold defaults to 1000 ms. Set
+`KEYPAD_LONG_PRESS_MS` while configuring to choose another positive
+millisecond value:
+
+```bash
+cmake -S . -B build -DKEYPAD_LONG_PRESS_MS=1500
+cmake --build build -j
+```
+
 Use separate build directories for the two variants so it is always clear
 which keyboard layout an executable contains. CMake also prints the selected
-layout while configuring.
+layout and long-press threshold while configuring.
 
 ## Run
 
-The default I²C device is `/dev/i2c-3` and the default address is `0x20`:
+The default I²C device is `/dev/i2c-3`, the default address is `0x20`, and
+GPIO port B is selected by default:
 
 ```bash
 sudo ./build/kbd
@@ -109,22 +122,28 @@ sudo ./build/kbd
 
 Options:
 ```bash
-sudo ./build/kbd --dev /dev/i2c-3 --addr 0x20 --poll-ms 5
+sudo ./build/kbd --dev /dev/i2c-3 --addr 0x20 --port A --poll-ms 5
 ```
 
-It prints key presses like:
+Short presses are reported after the key is released. A long press is reported
+once as soon as the key has remained down for at least the configured
+threshold; releasing it does not produce an additional short-press event.
+Press and release debounce are sample-based: transient empty reads do not end
+a press, and changing to a different key starts a new timing cycle.
+
+Example output:
 
 ```
-Pressed: 5
-Pressed: START/ENTER
+Pressed: 5 (short)
+Pressed: START/ENTER (long)
 ```
 
 The startup banner includes the selected layout name: `VID 14-key` or
-`legacy 4x4`.
+`legacy 4x4`, and the compiled long-press threshold.
 
 ## Notes / troubleshooting
 
 - If you get `Permission denied` opening `/dev/i2c-*`, run with `sudo` or add your user to the `i2c` group.
-- If keys are mirrored or incorrect, check both the selected CMake layout and the ribbon orientation.
+- If keys are mirrored or incorrect, check the runtime port, selected CMake layout, and ribbon orientation.
 - The scanner reports one key at a time; it does not implement multi-key rollover or ghosting prevention.
-- Both layouts use only MCP23017 port A (PA0..PA7).
+- Each process scans one complete MCP23017 GPIO port: PA0..PA7 or PB0..PB7.
