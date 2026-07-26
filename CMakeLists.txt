@@ -18,7 +18,7 @@ if (KEYPAD_LAYOUT_VID)
   message(STATUS "Keypad layout: VID 14-key")
 else()
   target_compile_definitions(kbd PRIVATE KEYPAD_LAYOUT_VID=0)
-  message(STATUS "Keypad layout: Off-the-shelf 4x4")
+  message(STATUS "Keypad layout: legacy 4x4")
 endif()
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
