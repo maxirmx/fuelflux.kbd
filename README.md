@@ -2,19 +2,35 @@
 
 This C++ demo scans a membrane matrix keypad connected to either MCP23017 GPIO
 port. Port B is selected by default; use `--port A` to select port A at
-runtime. The keyboard layout and wiring are selected at build time:
+runtime. Because the same connector is used for both ports, port B pin
+numbering is mirrored automatically. The keyboard layout and wiring are
+selected at build time:
 
 - **VID 14-key keyboard** (default)
 - **Legacy 4x4 keypad**
 
 Only one layout is included in each executable.
 
+## GPIO port mapping
+
+Keyboard layouts use logical pins P0 through P7. Port A maps them directly,
+while port B reverses them for the mirrored connector:
+
+| Logical pin | Port A | Port B |
+|---|---|---|
+| P0 | PA0 | PB7 |
+| P1 | PA1 | PB6 |
+| P2 | PA2 | PB5 |
+| P3 | PA3 | PB4 |
+| P4 | PA4 | PB3 |
+| P5 | PA5 | PB2 |
+| P6 | PA6 | PB1 |
+| P7 | PA7 | PB0 |
+
 ## VID 14-key keyboard
 
 The eight Crimpflex contacts are numbered left-to-right when the keyboard is
-viewed from the front, as in the manufacturer's drawing. In the table, `P0`
-through `P7` refer to the same-numbered pin on the selected port (`PA0` through
-`PA7` or `PB0` through `PB7`).
+viewed from the front, as in the manufacturer's drawing.
 
 | Contact | Matrix net | Selected port | Direction |
 |---:|---|---|---|
@@ -139,11 +155,12 @@ Pressed: START/ENTER (long)
 ```
 
 The startup banner includes the selected layout name: `VID 14-key` or
-`legacy 4x4`, and the compiled long-press threshold.
+`legacy 4x4`, the selected port and pin-map direction, and the compiled
+long-press threshold.
 
 ## Notes / troubleshooting
 
 - If you get `Permission denied` opening `/dev/i2c-*`, run with `sudo` or add your user to the `i2c` group.
-- If keys are mirrored or incorrect, check the runtime port, selected CMake layout, and ribbon orientation.
+- If keys are incorrect, check the runtime port, selected CMake layout, and ribbon orientation.
 - The scanner reports one key at a time; it does not implement multi-key rollover or ghosting prevention.
-- Each process scans one complete MCP23017 GPIO port: PA0..PA7 or PB0..PB7.
+- Port A uses direct numbering; port B automatically applies the mirrored `0↔7`, `1↔6`, `2↔5`, `3↔4` mapping.

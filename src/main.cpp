@@ -42,6 +42,13 @@ struct KeypadLayout {
   std::string_view keymap[MATRIX_SIZE][MATRIX_SIZE];
 };
 
+struct PortPinMapping {
+  uint8_t row_mask;
+  uint8_t col_mask;
+  uint8_t row_bits[MATRIX_SIZE];
+  uint8_t col_bits[MATRIX_SIZE];
+};
+
 #if KEYPAD_LAYOUT_VID
 constexpr KeypadLayout KEYPAD_LAYOUT = {
   "VID 14-key",
@@ -76,6 +83,57 @@ static_assert((KEYPAD_LAYOUT.row_mask & KEYPAD_LAYOUT.col_mask) == 0,
               "row and column GPIO masks must not overlap");
 static_assert((KEYPAD_LAYOUT.row_mask | KEYPAD_LAYOUT.col_mask) == 0xFF,
               "keypad layout must use all selected MCP23017 port pins");
+
+constexpr uint8_t physical_bit(
+  MCP23017::Port port,
+  uint8_t logical_bit
+) {
+  return port == MCP23017::Port::B
+    ? static_cast<uint8_t>(7u - logical_bit)
+    : logical_bit;
+}
+
+constexpr uint8_t physical_mask(
+  MCP23017::Port port,
+  uint8_t logical_mask
+) {
+  uint8_t result = 0;
+  for (uint8_t logical_bit = 0; logical_bit < 8; logical_bit++) {
+    if ((logical_mask & static_cast<uint8_t>(1u << logical_bit)) != 0) {
+      result |= static_cast<uint8_t>(
+        1u << physical_bit(port, logical_bit)
+      );
+    }
+  }
+  return result;
+}
+
+static_assert(physical_bit(MCP23017::Port::A, 0) == 0);
+static_assert(physical_bit(MCP23017::Port::A, 7) == 7);
+static_assert(physical_bit(MCP23017::Port::B, 0) == 7);
+static_assert(physical_bit(MCP23017::Port::B, 1) == 6);
+static_assert(physical_bit(MCP23017::Port::B, 6) == 1);
+static_assert(physical_bit(MCP23017::Port::B, 7) == 0);
+static_assert(physical_mask(MCP23017::Port::B, 0xAA) == 0x55);
+static_assert(physical_mask(MCP23017::Port::B, 0x0F) == 0xF0);
+
+static PortPinMapping make_port_pin_mapping(MCP23017::Port port) {
+  PortPinMapping mapping{
+    physical_mask(port, KEYPAD_LAYOUT.row_mask),
+    physical_mask(port, KEYPAD_LAYOUT.col_mask),
+    {},
+    {}
+  };
+
+  for (int index = 0; index < MATRIX_SIZE; index++) {
+    mapping.row_bits[index] =
+      physical_bit(port, KEYPAD_LAYOUT.row_bits[index]);
+    mapping.col_bits[index] =
+      physical_bit(port, KEYPAD_LAYOUT.col_bits[index]);
+  }
+
+  return mapping;
+}
 
 static volatile std::sig_atomic_t g_stop = 0;
 
@@ -118,12 +176,13 @@ static std::optional<MCP23017::Port> parse_port(std::string_view value) {
 
 static std::string_view scan_keypad(
   MCP23017& mcp,
-  MCP23017::Port port
+  MCP23017::Port port,
+  const PortPinMapping& pins
 ) {
   for (int row = 0; row < MATRIX_SIZE; row++) {
-    uint8_t output = KEYPAD_LAYOUT.row_mask;
+    uint8_t output = pins.row_mask;
     output &= static_cast<uint8_t>(
-      ~(1u << KEYPAD_LAYOUT.row_bits[row])
+      ~(1u << pins.row_bits[row])
     );
     mcp.write_olat(port, output);
 
@@ -131,27 +190,27 @@ static std::string_view scan_keypad(
     std::this_thread::sleep_for(std::chrono::microseconds(300));
 
     const uint8_t columns = static_cast<uint8_t>(
-      mcp.read_gpio(port) & KEYPAD_LAYOUT.col_mask
+      mcp.read_gpio(port) & pins.col_mask
     );
-    if (columns == KEYPAD_LAYOUT.col_mask) {
+    if (columns == pins.col_mask) {
       continue;
     }
 
     for (int column = 0; column < MATRIX_SIZE; column++) {
       const uint8_t bit = static_cast<uint8_t>(
-        1u << KEYPAD_LAYOUT.col_bits[column]
+        1u << pins.col_bits[column]
       );
       if ((columns & bit) == 0) {
         const std::string_view key = KEYPAD_LAYOUT.keymap[row][column];
         if (!key.empty()) {
-          mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
+          mcp.write_olat(port, pins.row_mask);
           return key;
         }
       }
     }
   }
 
-  mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
+  mcp.write_olat(port, pins.row_mask);
   return {};
 }
 
@@ -199,6 +258,8 @@ int main(int argc, char** argv) {
     }
   }
 
+  const PortPinMapping pins = make_port_pin_mapping(port);
+
   try {
     MCP23017 mcp(dev, addr);
     mcp.open_bus();
@@ -207,18 +268,19 @@ int main(int argc, char** argv) {
     // IODIR bit: 1=input, 0=output
     mcp.configure_port(
       port,
-      KEYPAD_LAYOUT.col_mask,
-      KEYPAD_LAYOUT.col_mask
+      pins.col_mask,
+      pins.col_mask
     );
 
     // Set all rows HIGH initially (inactive)
     // For outputs, OLATA bit=1 -> drive high.
     // Column latch bits are don't-care because those pins are inputs.
-    mcp.write_olat(port, KEYPAD_LAYOUT.row_mask);
+    mcp.write_olat(port, pins.row_mask);
 
     std::cout << "MCP23017 keypad demo started\n"
               << "  Layout  : " << KEYPAD_LAYOUT.name << "\n"
-              << "  Port    : " << port_name(port) << "\n"
+              << "  Port    : " << port_name(port)
+              << (port == MCP23017::Port::B ? " (mirrored)\n" : " (direct)\n")
               << "  Long key: " << LONG_PRESS_THRESHOLD.count() << " ms\n"
               << "  I2C dev : " << dev << "\n"
               << "  Address : 0x" << std::hex << int(addr) << std::dec << "\n"
@@ -231,7 +293,7 @@ int main(int argc, char** argv) {
     );
 
     while (!g_stop) {
-      const std::string_view found = scan_keypad(mcp, port);
+      const std::string_view found = scan_keypad(mcp, port, pins);
       const auto event = press_tracker.update(
         found,
         std::chrono::steady_clock::now()
